@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HANOI STUDIO | VIBRANT</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            margin: 0; overflow: hidden; 
+            background: #f4f4f9; /* Soft Light Grey */
+            font-family: 'Outfit', sans-serif; 
+            color: #333;
+        }
+        
+        #input_video { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            transform: scaleX(-1); opacity: 0; z-index: 0;
+        }
+
+        #ui-layer { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+
+        /* HEADER UI */
+        .project-header {
+            position: absolute; top: 30px; left: 40px;
+            display: flex; flex-direction: column; gap: 5px;
+        }
+        .project-title { font-size: 28px; font-weight: 800; color: #111; letter-spacing: -1px; }
+        .project-subtitle { font-size: 14px; color: #666; font-weight: 600; }
+
+        /* STATS CARD */
+        .stats-card {
+            position: absolute; top: 30px; right: 40px;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(15px);
+            padding: 20px 30px;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+            border: 1px solid rgba(255,255,255,0.5);
+            text-align: right;
+        }
+        .move-count { font-size: 36px; font-weight: 800; color: #3b82f6; line-height: 1; }
+        .move-label { font-size: 12px; text-transform: uppercase; color: #94a3b8; font-weight: 700; letter-spacing: 1px; }
+
+        /* HAND FEEDBACK PILLS */
+        .feedback-container {
+            position: absolute; bottom: 40px; width: 100%;
+            display: flex; justify-content: center; gap: 20px;
+        }
+
+        .pill {
+            background: #fff; padding: 12px 24px; border-radius: 50px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+            display: flex; align-items: center; gap: 10px;
+            font-size: 14px; font-weight: 700; color: #ccc;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transform: scale(0.95);
+        }
+        .pill.active { transform: scale(1.05); color: #333; opacity: 1; }
+        .pill.active.left { border-bottom: 4px solid #f59e0b; }
+        .pill.active.right { border-bottom: 4px solid #3b82f6; }
+
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #eee; }
+        .active.left .status-dot { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; }
+        .active.right .status-dot { background: #3b82f6; box-shadow: 0 0 10px #3b82f6; }
+
+        /* LOADING */
+        #loader {
+            position: absolute; inset: 0; background: #fff; z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .spinner { width: 40px; height: 40px; border: 4px solid #eee; border-top-color: #3b82f6; border-radius: 50%; animation: spin 1s infinite linear; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <h3 style="margin-top:20px; color:#999; font-weight:600;">LOADING STUDIO...</h3>
+    </div>
+
+    <video id="input_video"></video>
+
+    <div id="ui-layer">
+        <div class="project-header">
+            <div class="project-title">Motion Hanoi</div>
+            <div class="project-subtitle">Computer Vision Project // Spring 2025</div>
+        </div>
+
+        <div class="stats-card">
+            <div class="move-count" id="score">0</div>
+            <div class="move-label">Moves Taken</div>
+        </div>
+
+        <div class="feedback-container">
+            <div id="pill-l" class="pill left">
+                <div class="status-dot"></div>
+                LEFT HAND: ROTATE
+            </div>
+            <div id="pill-r" class="pill right">
+                <div class="status-dot"></div>
+                RIGHT HAND: GRAB
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+        // --- 1. CONFIGURATION ---
+        const ROD_POS = [-6, 0, 6];
+        const DISK_COUNT = 4;
+        let moves = 0;
+        let gameState = [[], [], []];
+        let heldDisk = null;
+
+        // Colors for disks (Vibrant Student Aesthetic)
+        const COLORS = [0x3b82f6, 0x8b5cf6, 0xec4899, 0xf59e0b, 0x10b981]; 
+
+        // --- 2. THREE.JS SCENE ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xf4f4f9);
+        // Soft fog for depth
+        scene.fog = new THREE.Fog(0xf4f4f9, 15, 40);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 8, 20);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Softer shadows
+        document.body.appendChild(renderer.domElement);
+
+        // LIGHTING (Studio Setup)
+        const ambi = new THREE.AmbientLight(0xffffff, 0.6); // Bright ambient
+        scene.add(ambi);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048; // High res shadows
+        dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        // FLOOR (Clean White Surface)
+        const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(100, 100),
+            new THREE.ShadowMaterial({ opacity: 0.1 }) // Only show shadows
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+        
+        // Add a subtle grid
+        const grid = new THREE.GridHelper(50, 50, 0xcccccc, 0xe5e5e5);
+        scene.add(grid);
+
+        // --- 3. OBJECTS ---
+        
+        // RODS (Minimalist Pylons)
+        const rodGeo = new THREE.CylinderGeometry(0.15, 0.15, 8, 32);
+        const rodMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.4, metalness: 0.5 });
+        const baseGeo = new THREE.CylinderGeometry(2, 2.2, 0.3, 64);
+        const baseMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+
+        ROD_POS.forEach(x => {
+            const r = new THREE.Mesh(rodGeo, rodMat);
+            r.position.set(x, 4, 0);
+            r.castShadow = true; r.receiveShadow = true;
+            scene.add(r);
+
+            const b = new THREE.Mesh(baseGeo, baseMat);
+            b.position.set(x, 0.15, 0);
+            b.receiveShadow = true;
+            scene.add(b);
+        });
+
+        // DISKS (Ceramic/Plastic Look)
+        const disks = [];
+        
+        function createDisk(size, rodIdx) {
+            // Torus shape is friendlier and looks cooler
+            const radius = 1.2 + (size * 0.5);
+            const tube = 0.5;
+            const geo = new THREE.TorusGeometry(radius, tube, 16, 64);
+            const col = COLORS[size % COLORS.length];
+            
+            const mat = new THREE.MeshPhysicalMaterial({
+                color: col,
+                metalness: 0.1,
+                roughness: 0.2, // Glossy
+                clearcoat: 0.8,
+                clearcoatRoughness: 0.1
+            });
+            
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.rotation.x = Math.PI / 2;
+            mesh.castShadow = true; 
+            mesh.receiveShadow = true;
+            
+            // Invisible hitbox cylinder for easier picking
+            const hitGeo = new THREE.CylinderGeometry(radius + tube, radius + tube, tube * 2, 16);
+            const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+            const hitMesh = new THREE.Mesh(hitGeo, hitMat);
+            hitMesh.rotation.x = -Math.PI / 2; // Revert rotation relative to parent
+            mesh.add(hitMesh);
+
+            mesh.userData = { size: size, rod: rodIdx };
+            return mesh;
+        }
+
+        // --- 4. GAME LOGIC ---
+        function initGame() {
+            disks.forEach(d => scene.remove(d));
+            disks.length = 0;
+            gameState = [[], [], []];
+            moves = 0;
+            document.getElementById('score').innerText = "0";
+
+            for (let i = DISK_COUNT - 1; i >= 0; i--) {
+                const d = createDisk(i, 0);
+                scene.add(d);
+                disks.push(d);
+                gameState[0].push(d);
+                placeDisk(d, 0, gameState[0].length - 1);
+            }
+        }
+
+        function placeDisk(disk, rodIdx, stackHeight) {
+            disk.position.set(ROD_POS[rodIdx], 0.6 + (stackHeight * 0.9), 0);
+            disk.rotation.x = Math.PI / 2;
+            disk.rotation.y = 0;
+            disk.userData.rod = rodIdx;
+        }
+
+        initGame();
+
+        // --- 5. INTERACTION VISUALS ---
+        
+        // Cursor
+        const cursor = new THREE.Mesh(
+            new THREE.SphereGeometry(0.25, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0x333333 })
+        );
+        scene.add(cursor);
+
+        // Ghost (Preview of where disk will drop)
+        const ghost = new THREE.Mesh(
+            new THREE.CylinderGeometry(1, 1, 0.2, 32),
+            new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.4 })
+        );
+        ghost.visible = false;
+        scene.add(ghost);
+
+        // --- 6. HAND TRACKING LOOP ---
+        let smoothX = 0, smoothY = 0;
+        let camAngle = 0;
+
+        function onResults(results) {
+            document.getElementById('loader').style.display = 'none';
+            
+            const pillL = document.getElementById('pill-l');
+            const pillR = document.getElementById('pill-r');
+            pillL.classList.remove('active');
+            pillR.classList.remove('active');
+
+            let leftHand = null;  // For Camera
+            let rightHand = null; // For Interaction
+
+            if (results.multiHandLandmarks) {
+                // MediaPipe Label Logic: 
+                // "Left" label = Physical Left Hand (appears on right side of screen if mirrored)
+                // "Right" label = Physical Right Hand (appears on left side of screen if mirrored)
+                
+                results.multiHandedness.forEach((h, i) => {
+                    if (h.label === 'Left') leftHand = results.multiHandLandmarks[i]; // User's Left
+                    if (h.label === 'Right') rightHand = results.multiHandLandmarks[i]; // User's Right
+                });
+
+                // --- CAMERA (LEFT HAND) ---
+                if (leftHand) {
+                    pillL.classList.add('active');
+                    const x = leftHand[9].x; // Palm Center
+                    const targetAngle = (x - 0.5) * 2.0; // -1 to 1 rad
+                    camAngle += (targetAngle - camAngle) * 0.05; // Smooth lerp
+                    
+                    camera.position.x = Math.sin(camAngle) * 20;
+                    camera.position.z = Math.cos(camAngle) * 20;
+                    camera.lookAt(0, 5, 0);
+                }
+
+                // --- INTERACTION (RIGHT HAND) ---
+                if (rightHand) {
+                    pillR.classList.add('active');
+                    
+                    // 1. Position Mapping (Free Movement)
+                    const indexTip = rightHand[8];
+                    // Map 0-1 to World Coords roughly (-15 to 15)
+                    const targetX = (0.5 - indexTip.x) * 35; 
+                    const targetY = (0.5 - indexTip.y) * 25 + 5;
+                    
+                    smoothX += (targetX - smoothX) * 0.2;
+                    smoothY += (targetY - smoothY) * 0.2;
+                    
+                    cursor.position.set(smoothX, smoothY, 0);
+
+                    // 2. Pinch Detection
+                    const thumbTip = rightHand[4];
+                    const dist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                    const isPinching = dist < 0.05; // Adjust sensitivity
+
+                    // 3. Logic
+                    if (isPinching) {
+                        cursor.scale.setScalar(0.8);
+                        cursor.material.color.setHex(0x3b82f6); // Blue on pinch
+
+                        if (!heldDisk) {
+                            // ATTEMPT GRAB
+                            // Find closest top disk
+                            let closest = null;
+                            let minD = 2.5; // Grab radius
+
+                            ROD_POS.forEach((rx, rIdx) => {
+                                const stack = gameState[rIdx];
+                                if (stack.length > 0) {
+                                    const top = stack[stack.length - 1];
+                                    const d = Math.hypot(smoothX - top.position.x, smoothY - top.position.y);
+                                    if (d < minD) { minD = d; closest = top; }
+                                }
+                            });
+
+                            if (closest) {
+                                heldDisk = closest;
+                                heldDisk.material.emissive.set(0x333333); // Highlight
+                            }
+                        } else {
+                            // DRAGGING (Free movement)
+                            heldDisk.position.set(smoothX, smoothY, 0);
+                            heldDisk.rotation.x = Math.PI / 2 + 0.3; // Tilt slightly towards cam
+                            heldDisk.rotation.y = (smoothX - ROD_POS[heldDisk.userData.rod]) * -0.05; // Tilt left/right
+                            
+                            // PREVIEW GHOST
+                            updateGhost(heldDisk);
+                        }
+                    } else {
+                        // RELEASED
+                        cursor.scale.setScalar(1.0);
+                        cursor.material.color.setHex(0x333333);
+
+                        if (heldDisk) {
+                            dropDisk(heldDisk);
+                            heldDisk.material.emissive.set(0x000000); // Un-highlight
+                            heldDisk = null;
+                            ghost.visible = false;
+                        }
+                    }
+                } else {
+                    // Hand lost
+                    if(heldDisk) { dropDisk(heldDisk); heldDisk = null; ghost.visible = false; }
+                }
+            }
+        }
+
+        function updateGhost(disk) {
+            // Find which rod we are OVER
+            let targetRod = -1;
+            let minD = 3.0; // Hover radius
+
+            ROD_POS.forEach((rx, i) => {
+                if (Math.abs(disk.position.x - rx) < minD) {
+                    targetRod = i;
+                }
+            });
+
+            if (targetRod !== -1) {
+                ghost.visible = true;
+                const stack = gameState[targetRod];
+                // Check validity
+                let isValid = false;
+                if (stack.length === 0) isValid = true;
+                else if (disk.userData.size < stack[stack.length-1].userData.size) isValid = true;
+
+                // Color
+                ghost.material.color.setHex(isValid ? 0x10b981 : 0xef4444); // Green or Red
+                
+                const yPos = 0.6 + (stack.length * 0.9);
+                ghost.position.set(ROD_POS[targetRod], yPos, 0);
+                
+                // Scale ghost to disk size
+                const radius = 1.2 + (disk.userData.size * 0.5);
+                ghost.scale.set(radius, 1, radius); // y is ignored mostly for cylinder thickness
+            } else {
+                ghost.visible = false;
+            }
+        }
+
+        function dropDisk(disk) {
+            // Check where we are dropping
+            let targetRod = -1;
+            let minD = 3.0;
+
+            ROD_POS.forEach((rx, i) => {
+                if (Math.abs(disk.position.x - rx) < minD) targetRod = i;
+            });
+
+            const oldRod = disk.userData.rod;
+
+            if (targetRod !== -1 && targetRod !== oldRod) {
+                // Validate Move
+                const targetStack = gameState[targetRod];
+                let allowed = false;
+                if (targetStack.length === 0) allowed = true;
+                else if (disk.userData.size < targetStack[targetStack.length-1].userData.size) allowed = true;
+
+                if (allowed) {
+                    gameState[oldRod].pop();
+                    gameState[targetRod].push(disk);
+                    placeDisk(disk, targetRod, gameState[targetRod].length - 1);
+                    moves++;
+                    document.getElementById('score').innerText = moves;
+                } else {
+                    // Invalid -> Return home
+                    placeDisk(disk, oldRod, gameState[oldRod].indexOf(disk));
+                }
+            } else {
+                // Dropped in void -> Return home
+                placeDisk(disk, oldRod, gameState[oldRod].indexOf(disk));
+            }
+        }
+
+        // --- 7. SETUP ---
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const video = document.getElementById('input_video');
+        const cameraUtils = new Camera(video, {
+            onFrame: async () => { await hands.send({image: video}); },
+            width: 1280, height: 720
+        });
+        cameraUtils.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
